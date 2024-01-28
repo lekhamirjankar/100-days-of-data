@@ -3,6 +3,13 @@ library(httr)
 library(jsonlite)
 library(magrittr)
 library(openxlsx)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(gridExtra)
+library(grid)
+
+# Data scraping & manipulation
 
 # This is to see all the available lists
 res <- GET("https://api.nytimes.com/svc/books/v3/lists/names.json?api-key=<add your api key here>")
@@ -136,3 +143,145 @@ NYT_df_combined_genre <- combined_data_with_genres %>%
     !(Genre4 %in% c('Fiction', 'Audiobook', 'Contemporary')) ~ Genre4,
     TRUE ~ 'Unknown'
   ))
+
+# Analysis 
+
+# 1. Top Genres
+
+# Calculate the count of genres
+top_genres <- NYT_df_combined_genre %>%
+  group_by(Genre = Genre) %>%
+  summarize(Count = n()) %>%
+  arrange(desc(Count))
+
+# Visualize
+ggplot(top_genres, aes(x = "", y = Count, fill = Genre)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  labs(title = "Top Genres",
+       fill = NULL) +
+  theme_minimal() +
+  theme(text = element_text(family = "Junicode"),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_blank(),
+        legend.position = "right")
+
+# 2. Temporal Analysis
+
+# Round down the dates to the start of each month
+NYT_df_combined_genre$YearMonth <- floor_date(NYT_df_combined_genre$PublishedDate, "month")
+
+# Group data by month and summarize the rankings
+monthly_data <- NYT_df_combined_genre %>%
+  group_by(YearMonth, Genre) %>%
+  summarise(AverageRank = mean(Rank))
+
+# Visualize
+ggplot(monthly_data, aes(x = YearMonth, fill = Genre)) +
+  geom_bar() +
+  labs(title = "Genre Distribution Over Time",
+       x = NULL,
+       y = "Frequency",
+       fill = "Genre") +
+  scale_color_brewer(palette = "Set3") +
+  theme_minimal() +
+  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
+  theme(
+    text = element_text(family = "Junicode"),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(hjust = 0.5, size = 11)
+  )
+
+# 3. Prolific Authors
+
+# Convert data type
+NYT_df_combined_genre$Author <- as.character(NYT_df_combined_genre$Author)
+
+# Identify most prolific authors based on the number of appearances
+prolific_authors <- NYT_df_combined_genre %>%
+  group_by(Author) %>%
+  summarize(Appearances = n_distinct(Title)) %>%
+  arrange(desc(Appearances))
+
+# Filter for authors with at least 3 appearances
+prolific_authors_filtered <- prolific_authors %>%
+  filter(Appearances >= 3)
+
+# Visualize
+ggplot(prolific_authors_filtered, aes(x = reorder(Author, -Appearances), y = Appearances)) +
+  geom_bar(stat = "identity", fill = "#AC66CC") +
+  labs(title = "Most Prolific Authors",
+       x = NULL,
+       y = "Number of Appearances") +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Junicode"),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(hjust = 0.5, size = 11)
+  )
+
+# 4. Bestseller Rankings Over Time
+
+# Convert dates to Date type
+NYT_df_combined_genre$PublishedDate <- as.Date(NYT_df_combined_genre$PublishedDate)
+
+# Identify top 10 most frequent books
+top_10_books <- NYT_df_combined_genre %>%
+  group_by(Title) %>%
+  summarize(Frequency = n()) %>%
+  top_n(10, Frequency) %>%
+  pull(Title)
+
+# Filter dataframe for top 10 books
+filtered_data <- NYT_df_combined_genre %>%
+  filter(Title %in% top_10_books)
+
+# Define your custom colors
+custom_colors <- c("#333C83", "#FFB830", "#9ADCFF", "#C70A80", "#176B87", "#F24C4C", "#0B666A", "#8B104E", "#004721", "#563761")
+
+# Visualize
+ggplot(filtered_data, aes(x = PublishedDate, y = Rank, color = Title)) +
+  geom_line(linewidth = 0.7) +
+  labs(title = "Bestseller Rankings Over Time",
+       x = NULL,
+       y = "Rank") +
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        legend.box = "horizontal",
+        plot.title = element_text(hjust = 0.5),
+        text = element_text(family = "Junicode"),
+        axis.text.x = element_text(hjust = 0.5, size = 11)) +
+  scale_color_manual(values = custom_colors) +
+  guides(color = guide_legend(title = NULL)) +
+  scale_x_date(date_labels = "%b", date_breaks = "1 month")
+
+# 5. Top 10 Books
+
+# Create a vector of unique titles
+unique_titles <- unique(filtered_data$Title)
+
+# Create dataset containing only top 10 books
+top_10_data <- filtered_data %>%
+  filter(Title %in% unique_titles) %>%
+  distinct(Title, .keep_all = TRUE) %>%
+  slice_head(n = 10)
+
+# Display book covers for each unique title
+plots <- lapply(seq_len(nrow(top_10_data)), function(i) {
+  
+  img <- top_10_data$Image[i] |>
+    readBin("raw", 1e6) |>
+    jpeg::readJPEG() 
+  img <- rasterGrob(img, interpolate = TRUE)
+  
+  text <- textGrob(paste("Rank: ", top_10_data$Rank[i]), gp = gpar(fontsize = 12, col = "white"))
+  
+  # Combine image and text
+  grob <- arrangeGrob(img, text, ncol = 1, heights = unit.c(unit(0.8, "npc"), unit(0.2, "npc")))
+  
+  # Return the combined grob
+  return(grob)
+})
+
+# Arrange the plots in a grid with 2 rows and 5 columns
+grid.arrange(grobs = plots, ncol = 5, nrow = 2)
